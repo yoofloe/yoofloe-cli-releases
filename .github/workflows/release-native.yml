@@ -1,0 +1,92 @@
+name: release-native
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Public release tag to publish.
+        required: true
+        default: v0.1.33
+      source_ref:
+        description: Private CLI source ref to build.
+        required: true
+        default: v0.1.33
+
+permissions:
+  contents: write
+
+jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Ensure GitHub release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists."
+          else
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target main \
+              --title "$TAG" \
+              --notes "Yoofloe CLI $TAG native binaries built from private source ref $SOURCE_REF."
+          fi
+
+  build:
+    needs: prepare-release
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Check out private CLI source
+        uses: actions/checkout@v6
+        with:
+          repository: Henry0304/yoofloe-cli
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.YOOFLOE_PRIVATE_SOURCE_TOKEN }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Run lint
+        run: npm run lint
+
+      - name: Build native executable
+        run: npm run build:native
+
+      - name: Prepare release asset names
+        shell: bash
+        run: |
+          cp dist/native/manifest.json "dist/native/manifest-${RUNNER_OS}-${RUNNER_ARCH}.json"
+
+      - name: Upload assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          gh release upload "$TAG" \
+            dist/native/yoofloe-* \
+            "dist/native/manifest-${RUNNER_OS}-${RUNNER_ARCH}.json" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
